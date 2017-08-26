@@ -110,27 +110,24 @@ private:
             return;        
         }
 
-        std::string error;        
-        auto info = retrieveProtocolInfo(input, error);
-        if (!error.empty())
+        ProtocolInfo info(input);        
+        if (info.status() == ProtocolInfo::Status::success)
         {
-            std::cerr << error << std::endl;
-            bufferevent_free(bev);
-            return;            
+            std::cout << "receive connection success: " << info << std::endl;
+            info.responseSuccess(output);
+            
+            // TODO: add implements of Tunnel
+            tunnels[bev] = Tunnel();
         }
-        
-        if (info == nullptr)
+        else if (info.status() == ProtocolInfo::Status::error)
         {
-            return;            
+            std::cerr << "receive connection error: " << info.error() << std::endl;
+            bufferevent_free(bev);            
         }
-        std::cout << "receive connection: " << *info << std::endl;        
-        
-        auto resp = protocolResponse(info);        
-        
-        evbuffer_add(output, resp.data(), resp.size());
-
-        // TODO: add implements of Tunnel
-        tunnels[bev] = Tunnel();        
+        else
+        {
+            // the content is incomplete, nothing to do
+        }
     }
 
     static void eventCallback(struct bufferevent *bev, short events, void *arg)

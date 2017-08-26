@@ -4,16 +4,13 @@
 #include "protocol.hpp"
 #include "tunnel.hpp"
 
+#include <string.h>
 #include <iostream>
 #include <string>
 #include <unordered_map>
-
 #include <event2/listener.h>
 #include <event2/bufferevent.h>
 #include <event2/buffer.h>
-
-
-#include <string.h>
 
 /*
   SOCKS 4 RFC: https://www.openssh.com/txt/socks4.protocol
@@ -126,15 +123,8 @@ private:
         {
             return;            
         }
+        std::cout << "receive connection: " << *info << std::endl;        
         
-        std::cout << "Receive connection, version: " << int(info->version)
-                  << ", command: " << int(info->command)
-                  << ", destination port: " << info->port
-                  << ", destination ip: " << info->ipString
-                  << (info->protocol == ProtocolInfo::Protocol::socks4 ? "" : ", domain: ")
-                  << info->domain
-                  << std::endl;
-  
         auto resp = protocolResponse(info);        
         
         evbuffer_add(output, resp.data(), resp.size());

@@ -1,6 +1,7 @@
 #ifndef PROTOCOL_H
 #define PROTOCOL_H
 
+#include <iostream>
 #include <string>
 #include <memory>
 
@@ -21,6 +22,26 @@ struct ProtocolInfo
     std::string     domain;    
     Protocol        protocol;    
 };
+
+std::ostream &operator<<(std::ostream &os, const ProtocolInfo &info)
+{
+    if (info.protocol == ProtocolInfo::Protocol::socks4)
+    {
+        os << "ProtocolInfo - version: " << int(info.version)
+           << ", command: " << int(info.command)
+           << ", destination port: " << info.port
+           << ", destination ip: " << info.ipString;
+    }
+    else
+    {
+        os << "ProtocolInfo - version: " << int(info.version)
+           << ", command: " << int(info.command)
+           << ", destination port: " << info.port
+           << ", domain: " << info.domain;
+    }
+    
+    return os;    
+}
 
 std::unique_ptr<ProtocolInfo> retrieveProtocolInfo(evbuffer *input, std::string &error)
 {    
@@ -52,26 +73,23 @@ std::unique_ptr<ProtocolInfo> retrieveProtocolInfo(evbuffer *input, std::string 
         error = std::string("convert address error when calling inet_ntop(): ") + strerror(errno);
         return nullptr;        
     }
-
-    info->protocol = ProtocolInfo::Protocol::socks4;            
+    
     if (info->ipString.find("0.0.0.") != std::string::npos && info->ipString.back() != '0')
     {
         info->protocol = ProtocolInfo::Protocol::socks4a;
-    }
-
-    if (info->protocol == ProtocolInfo::Protocol::socks4a)
-    {
+        
         auto pos2 = buf.find('\0', pos);
         if (pos == std::string::npos)
         {
             return nullptr;            
         }
         info->domain = buf.substr(pos, pos2 - pos);
-        evbuffer_drain(input, pos2);                
+        evbuffer_drain(input, pos2);        
     }
     else
     {
-        evbuffer_drain(input, pos);                        
+        info->protocol = ProtocolInfo::Protocol::socks4;        
+        evbuffer_drain(input, pos);                                
     }
     
     return info;    

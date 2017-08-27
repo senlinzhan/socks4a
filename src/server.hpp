@@ -4,10 +4,13 @@
 #include "protocol.hpp"
 #include "tunnel.hpp"
 
+#include <sys/socket.h>
 #include <string.h>
+
 #include <iostream>
 #include <string>
 #include <unordered_map>
+
 #include <event2/listener.h>
 #include <event2/bufferevent.h>
 #include <event2/buffer.h>
@@ -46,7 +49,7 @@ public:
         if (listener_ == nullptr)
         {
             int err = EVUTIL_SOCKET_ERROR();
-            std::cerr << "Couldn't create listener: " 
+            std::cerr << "couldn't create listener: " 
                       << evutil_socket_error_to_string(err)
                       << std::endl;
             return;            
@@ -87,7 +90,7 @@ private:
         auto *base = evconnlistener_get_base(listener);
         
         int err = EVUTIL_SOCKET_ERROR();
-        std::cerr << "Got an error on the listener: "
+        std::cerr << "got an error on the listener: "
                   << evutil_socket_error_to_string(err)
                   << std::endl;
         
@@ -105,24 +108,23 @@ private:
         auto iter = tunnels.find(bev);
         if (iter != tunnels.end())
         {
-            // connection has been established
-            // TODO: move data to tunnel
+            iter->second.transferData(input);            
             return;        
         }
 
         ProtocolInfo info(input);        
         if (info.status() == ProtocolInfo::Status::success)
         {
-            std::cout << "receive connection success: " << info << std::endl;
+            std::cout << "receive protocol info from client: " << info << std::endl;
             info.responseSuccess(output);
             
-            // TODO: add implements of Tunnel
-            tunnels[bev] = Tunnel();
+            auto *base = bufferevent_get_base(bev);
+            tunnels.emplace(bev, Tunnel(base, bev, info));            
         }
         else if (info.status() == ProtocolInfo::Status::error)
         {
-            std::cerr << "receive connection error: " << info.error() << std::endl;
-            bufferevent_free(bev);            
+            std::cerr << "receive protocol info error: " << info.error() << std::endl;
+            shutdown(bufferevent_getfd(bev), SHUT_WR);
         }
         else
         {
@@ -132,17 +134,27 @@ private:
 
     static void eventCallback(struct bufferevent *bev, short events, void *arg)
     {
-        if (events & BEV_EVENT_ERROR)
-        {
-            int err = EVUTIL_SOCKET_ERROR();
-            std::cerr << "Got an error from bufferevent: "
-                      << evutil_socket_error_to_string(err)
-                      << std::endl;
-        }
-        
         if (events & (BEV_EVENT_EOF | BEV_EVENT_ERROR))
         {
-            bufferevent_free(bev);
+            if (events & BEV_EVENT_ERROR)
+            {
+                int err = EVUTIL_SOCKET_ERROR();
+                std::cerr << "receive error from client: "
+                          << evutil_socket_error_to_string(err)
+                          << std::endl;
+            }
+            else
+            {
+                std::cout << "connection close by client" << std::endl;
+
+                auto iter = tunnels.find(bev);
+                if (iter != tunnels.end())
+                {
+                    iter->second.shutdown();                
+                    tunnels.erase(iter);
+                }            
+                bufferevent_free(bev);                
+            }
         }        
     }
 };

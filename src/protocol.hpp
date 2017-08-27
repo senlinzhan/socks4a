@@ -5,6 +5,7 @@
 #include <string>
 #include <memory>
 
+#include <assert.h>
 #include <arpa/inet.h>
 #include <errno.h>
 
@@ -17,7 +18,8 @@ class ProtocolInfo
 public:
     ProtocolInfo(evbuffer *input)
     {
-        size_t len = evbuffer_get_length(input);    
+        size_t len = evbuffer_get_length(input);
+        
         if (len < 9)
         {
             status_ = Status::incomplete;
@@ -27,7 +29,7 @@ public:
         std::string buf(len, '\0');    
         evbuffer_copyout(input, (void *)buf.data(), len);
         
-        auto pos = buf.find('\0');    
+        auto pos = buf.find('\0', 8);    
         if (pos == std::string::npos)
         {
             status_ = Status::incomplete;
@@ -61,7 +63,6 @@ public:
             error_ = std::string("convert ip address ") + std::to_string(ip_) + " to string error: " + strerror(errno);
             return;            
         }
-    
         if (ipString_.find("0.0.0.") != std::string::npos && ipString_.back() != '0')
         {
             auto pos2 = buf.find('\0', pos);
@@ -72,18 +73,18 @@ public:
             }
 
             domain_ = buf.substr(pos, pos2 - pos);
-            evbuffer_drain(input, pos2);
+            evbuffer_drain(input, pos2 + 1);
             
             status_ = Status::success;            
             protocol_ = ProtocolInfo::Protocol::socks4a;
         }
         else
         {
-            evbuffer_drain(input, pos);
+            evbuffer_drain(input, pos + 1);
             
             status_ = Status::success;                        
             protocol_ = ProtocolInfo::Protocol::socks4;
-        }        
+        }
     }
 
     enum class Status   {success, error, incomplete};    
@@ -94,6 +95,11 @@ public:
         return status_;        
     }
 
+    Protocol protocol() const
+    {
+        return protocol_;        
+    }
+    
     const std::string &error() const
     {
         return error_;        
@@ -102,7 +108,7 @@ public:
     void responseSuccess(evbuffer *output)
     {
         std::string resp(8, '\0');
-        char reply_version = char(4);
+        char reply_version = char(0);
         char reply_command = char(90);
     
         resp[0] = reply_version;
@@ -115,6 +121,21 @@ public:
         memcpy(&resp[4], &ip, 4);
 
         evbuffer_add(output, resp.data(), resp.size());
+    }
+
+    unsigned short port() const
+    {
+        return port_;        
+    }
+
+    unsigned int ip() const
+    {
+        return ip_;        
+    }
+
+    const std::string &domain() const
+    {
+        return domain_;        
     }
     
 private:

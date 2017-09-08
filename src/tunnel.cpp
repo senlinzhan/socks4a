@@ -108,6 +108,10 @@ void readCallback(bufferevent *clientConn, void *arg)
 void eventCallback(bufferevent *clientConn, short events, void *arg)
 {
     auto tunnel = static_cast<Tunnel *>(arg);
+    auto serverConn = tunnel->serverConn();
+
+    auto iter = tunnels.find(serverConn);
+    assert(iter != tunnels.end());
     
     if (events & BEV_EVENT_CONNECTED)
     {
@@ -123,25 +127,27 @@ void eventCallback(bufferevent *clientConn, short events, void *arg)
             int err = bufferevent_socket_get_dns_error(clientConn);
             if (err != 0)
             {
-                std::cerr << "DNS error: "
-                          << evutil_gai_strerror(err)
-                          << std::endl;  
+                std::cerr << "client connection " << clientConn
+                          << " got DNS error: " << evutil_gai_strerror(err)
+                          << ", so we close itself and it's server connection "
+                          << serverConn << std::endl;  
             }
             else
             {
-                err = EVUTIL_SOCKET_ERROR();                    
-                std::cerr << "client connection " << clientConn << " received error: "
-                          << evutil_socket_error_to_string(err) << std::endl;
+                err = EVUTIL_SOCKET_ERROR();
+                std::cerr << "client connection " << clientConn
+                          << " got error: " << evutil_socket_error_to_string(err)
+                          << ", so we close itself and it's server connection "
+                          << serverConn << std::endl;
             }
+            
+            tunnels.erase(iter);                
+            bufferevent_free(serverConn);            
         }
         else
         {
             assert(events & BEV_EVENT_EOF);
-            assert(tunnel->status() == Tunnel::Status::Connected ||
-               tunnel->status() == Tunnel::Status::ActiveShutdown);
-
-            auto serverConn = tunnel->serverConn();
-            assert(tunnels.find(serverConn) != tunnels.end());
+            assert(tunnel->status() == Tunnel::Status::Connected || tunnel->status() == Tunnel::Status::ActiveShutdown);
             
             if (tunnel->status() == Tunnel::Status::Connected)
             {
@@ -155,11 +161,8 @@ void eventCallback(bufferevent *clientConn, short events, void *arg)
             {
                 std::cout << "client connection " << clientConn << " closed by the remote server, "
                           << "so we close itself and it's server connection " << serverConn << std::endl;
-                
-                auto iter = tunnels.find(serverConn);
-                assert(iter != tunnels.end());
-                tunnels.erase(iter);
-                
+
+                tunnels.erase(iter);                
                 bufferevent_free(serverConn);
             }            
         }

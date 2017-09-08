@@ -149,21 +149,33 @@ void eventCallback(struct bufferevent *serverConn, short events, void *arg)
 {
     if (events & (BEV_EVENT_EOF | BEV_EVENT_ERROR))
     {
+        auto iter = tunnels.find(serverConn);
+        if (iter == tunnels.end())
+        {
+            // server connection does't has a tunnel
+            std::cout << "server connection " << serverConn 
+                      << " was closed before establishing connection to the remote server"
+                      << std::endl;
+            bufferevent_free(serverConn);
+            
+            return;            
+        }
+
+        auto &tunnel = iter->second;
         if (events & BEV_EVENT_ERROR)
         {
             int err = EVUTIL_SOCKET_ERROR();
             std::cerr << "server connection " << serverConn << " receive error: "
                       << evutil_socket_error_to_string(err)
-                      << std::endl;
+                      << ", so we close itself and it's client connection "
+                      << tunnel->clientConn() << std::endl;
+
+            tunnels.erase(iter);
+            bufferevent_free(serverConn);
         }
         else
         {
             assert(events & BEV_EVENT_EOF);
-            
-            auto iter = tunnels.find(serverConn);
-            assert(iter != tunnels.end());
-
-            auto &tunnel = iter->second;
             assert(tunnel->status() != Tunnel::Status::ActiveShutdown);
             
             if (tunnel->status() == Tunnel::Status::Connected || tunnel->status() == Tunnel::Status::Pending)

@@ -25,7 +25,7 @@ public:
     Tunnel(const Tunnel &) = delete;
     Tunnel &operator=(const Tunnel &) = delete;
     
-    void shutdown();
+    void shutdownOnWriteComplete();
     
     void transferData(evbuffer *input);
 

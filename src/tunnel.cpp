@@ -2,15 +2,29 @@
 
 #include <string.h>
 #include <assert.h>
-#include <unordered_map>
 
-typedef void (*bufferevent_data_cb)(struct bufferevent *bev, void *ctx);
-typedef void (*bufferevent_event_cb)(struct bufferevent *bev, short events, void *ctx);
+#include <functional>
+#include <unordered_map>
 
 extern std::unordered_map<bufferevent *, TunnelPtr> tunnels;
 
 static void readCallback(bufferevent *clientConn, void *arg);
 static void eventCallback(bufferevent *clientConn, short events, void *arg);
+
+static void buffereventShutdown(bufferevent *conn, void *arg)
+{
+    ::shutdown(bufferevent_getfd(conn), SHUT_WR);
+}
+
+static void buffereventShutdownOnWriteComplete(bufferevent *conn)
+{
+    bufferevent_data_cb readCb;
+    bufferevent_event_cb eventCb;
+    void *arg;    
+    
+    bufferevent_getcb(conn, &readCb, nullptr, &eventCb, &arg);
+    bufferevent_setcb(conn, readCb, buffereventShutdown, eventCb, arg);
+}
 
 Tunnel::Tunnel(event_base *base, bufferevent *serverConn, const ProtocolInfo &info)
     : base_(base),
@@ -48,10 +62,9 @@ Tunnel::~Tunnel()
     bufferevent_free(clientConn_);    
 }
 
-void Tunnel::shutdown()
+void Tunnel::shutdownOnWriteComplete()
 {
-    ::shutdown(bufferevent_getfd(clientConn_), SHUT_WR);
-    status_ = Status::ActiveShutdown;    
+    buffereventShutdownOnWriteComplete(clientConn_);
 }
     
 void Tunnel::transferData(evbuffer *input)
@@ -70,7 +83,6 @@ bufferevent *Tunnel::clientConn()
     return clientConn_;    
 }
 
-
 Tunnel::Status Tunnel::status() const
 {
     return status_;    
@@ -86,19 +98,11 @@ void readCallback(bufferevent *clientConn, void *arg)
     auto tunnel = static_cast<Tunnel *>(arg);
     auto serverConn = tunnel->serverConn();
 
-    std::cout << "transfer data to server connection "
-              << serverConn << std::endl;
-    
     assert(tunnel->status() != Tunnel::Status::PassiveShutdown);
     
     auto input = bufferevent_get_input(clientConn);
     auto output = bufferevent_get_output(serverConn);
     evbuffer_add_buffer(output, input);        
-}
-
-void serverConnWriteCallback(bufferevent *serverConn, void *arg)
-{
-    ::shutdown(bufferevent_getfd(serverConn), SHUT_WR);    
 }
 
 void eventCallback(bufferevent *clientConn, short events, void *arg)
@@ -144,12 +148,7 @@ void eventCallback(bufferevent *clientConn, short events, void *arg)
                 std::cout << "client connection " << clientConn << " shutdown by the remote server, "
                           << "so we shutdown it's server connection " << serverConn << std::endl;
 
-                bufferevent_data_cb readCb;
-                bufferevent_event_cb eventCb;
-                
-                bufferevent_getcb(serverConn, &readCb, nullptr, &eventCb, nullptr);
-                bufferevent_setcb(serverConn, readCb, serverConnWriteCallback, eventCb, nullptr);
-                
+                buffereventShutdownOnWriteComplete(tunnel->serverConn());                
                 tunnel->setStatus(Tunnel::Status::PassiveShutdown);
             }
             else

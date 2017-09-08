@@ -170,7 +170,13 @@ void eventCallback(struct bufferevent *serverConn, short events, void *arg)
             {
                 std::cout << "server connection " << serverConn << " shutdown by the remote client, "
                           << "so we shutdown it's client connection " << tunnel->clientConn() << std::endl;
-                tunnel->shutdown();
+
+                // in order to safely shut down the tcp connection,
+                // we need to ensure that all data is sent 
+                // before shutdown() the tcp connection
+                tunnel->shutdownOnWriteComplete();
+                
+                tunnel->setStatus(Tunnel::Status::ActiveShutdown);
             }
             else
             {

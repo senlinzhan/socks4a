@@ -4,6 +4,9 @@
 #include <assert.h>
 #include <unordered_map>
 
+typedef void (*bufferevent_data_cb)(struct bufferevent *bev, void *ctx);
+typedef void (*bufferevent_event_cb)(struct bufferevent *bev, short events, void *ctx);
+
 extern std::unordered_map<bufferevent *, TunnelPtr> tunnels;
 
 static void readCallback(bufferevent *clientConn, void *arg);
@@ -21,8 +24,8 @@ Tunnel::Tunnel(event_base *base, bufferevent *serverConn, const ProtocolInfo &in
     bufferevent_setcb(clientConn_, readCallback, nullptr, eventCallback, this);
     bufferevent_enable(clientConn_, EV_READ|EV_WRITE);
 
-    std::cout << "create tunnel connection " << clientConn_ 
-              << " for connection " << serverConn << std::endl;
+    std::cout << "create client connection " << clientConn_ 
+              << " for server connection " << serverConn << std::endl;
     
     if (info_.protocol() == ProtocolInfo::Protocol::socks4)
     {
@@ -42,20 +45,18 @@ Tunnel::Tunnel(event_base *base, bufferevent *serverConn, const ProtocolInfo &in
 
 Tunnel::~Tunnel()
 {
-    std::cout << "close tunnel connection " << clientConn_ << std::endl;
     bufferevent_free(clientConn_);    
 }
 
 void Tunnel::shutdown()
 {
-    // std::cout << "shutdown client conn " << clientConn_ << std::endl;    
     ::shutdown(bufferevent_getfd(clientConn_), SHUT_WR);
     status_ = Status::ActiveShutdown;    
 }
     
 void Tunnel::transferData(evbuffer *input)
 {
-    auto *output = bufferevent_get_output(clientConn_);        
+    auto output = bufferevent_get_output(clientConn_);        
     evbuffer_add_buffer(output, input);        
 }
 
@@ -81,15 +82,23 @@ void Tunnel::setStatus(Status status)
 }
 
 void readCallback(bufferevent *clientConn, void *arg)
-{                                         
+{
     auto tunnel = static_cast<Tunnel *>(arg);
     auto serverConn = tunnel->serverConn();
 
+    std::cout << "transfer data to server connection "
+              << serverConn << std::endl;
+    
     assert(tunnel->status() != Tunnel::Status::PassiveShutdown);
     
     auto input = bufferevent_get_input(clientConn);
     auto output = bufferevent_get_output(serverConn);
     evbuffer_add_buffer(output, input);        
+}
+
+void serverConnWriteCallback(bufferevent *serverConn, void *arg)
+{
+    ::shutdown(bufferevent_getfd(serverConn), SHUT_WR);    
 }
 
 void eventCallback(bufferevent *clientConn, short events, void *arg)
@@ -98,8 +107,9 @@ void eventCallback(bufferevent *clientConn, short events, void *arg)
     
     if (events & BEV_EVENT_CONNECTED)
     {
-        std::cout << "tunnel connection " << clientConn
-                  << " connected" << std::endl;        
+        std::cout << "client connection " << clientConn
+                  << " connected" << std::endl;
+        
         tunnel->setStatus(Tunnel::Status::Connected);        
     }
     else if (events & (BEV_EVENT_ERROR | BEV_EVENT_EOF))
@@ -116,13 +126,13 @@ void eventCallback(bufferevent *clientConn, short events, void *arg)
             else
             {
                 err = EVUTIL_SOCKET_ERROR();                    
-                std::cerr << "got an error from bufferevent: "
-                          << evutil_socket_error_to_string(err)
-                          << std::endl;                    
+                std::cerr << "client connection " << clientConn << " received error: "
+                          << evutil_socket_error_to_string(err) << std::endl;
             }
         }
         else
         {
+            assert(events & BEV_EVENT_EOF);
             assert(tunnel->status() == Tunnel::Status::Connected ||
                tunnel->status() == Tunnel::Status::ActiveShutdown);
 
@@ -131,20 +141,26 @@ void eventCallback(bufferevent *clientConn, short events, void *arg)
             
             if (tunnel->status() == Tunnel::Status::Connected)
             {
-                std::cout << "tunnel connection " << clientConn << " close by server, we shutdown connection " << serverConn << std::endl;
+                std::cout << "client connection " << clientConn << " shutdown by the remote server, "
+                          << "so we shutdown it's server connection " << serverConn << std::endl;
+
+                bufferevent_data_cb readCb;
+                bufferevent_event_cb eventCb;
                 
-                ::shutdown(bufferevent_getfd(serverConn), SHUT_WR);
+                bufferevent_getcb(serverConn, &readCb, nullptr, &eventCb, nullptr);
+                bufferevent_setcb(serverConn, readCb, serverConnWriteCallback, eventCb, nullptr);
                 
                 tunnel->setStatus(Tunnel::Status::PassiveShutdown);
             }
             else
             {
-                std::cout << "tunnel connection " << clientConn << " receive FIN" << std::endl;                                
+                std::cout << "client connection " << clientConn << " closed by the remote server, "
+                          << "so we close itself and it's server connection " << serverConn << std::endl;
+                
                 auto iter = tunnels.find(serverConn);
                 assert(iter != tunnels.end());
                 tunnels.erase(iter);
-
-                std::cout << "close connection " << serverConn << std::endl;
+                
                 bufferevent_free(serverConn);
             }            
         }

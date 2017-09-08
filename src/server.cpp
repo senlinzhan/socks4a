@@ -158,6 +158,8 @@ void eventCallback(struct bufferevent *serverConn, short events, void *arg)
         }
         else
         {
+            assert(events & BEV_EVENT_EOF);
+            
             auto iter = tunnels.find(serverConn);
             assert(iter != tunnels.end());
 
@@ -167,14 +169,14 @@ void eventCallback(struct bufferevent *serverConn, short events, void *arg)
             if (tunnel->status() == Tunnel::Status::Connected || tunnel->status() == Tunnel::Status::Pending)
             {
                 std::cout << "server connection " << serverConn << " shutdown by the remote client, "
-                          << "so it shutdown it's client connection " << tunnel->clientConn() << std::endl;
+                          << "so we shutdown it's client connection " << tunnel->clientConn() << std::endl;
                 tunnel->shutdown();
             }
             else
             {
                 assert(tunnel->status() == Tunnel::Status::PassiveShutdown);
                 std::cout << "server connection " << serverConn << " closed by the remote client, "
-                          << "so it close itself and it's client connection " << tunnel->clientConn() << std::endl;
+                          << "so we close itself and it's client connection " << tunnel->clientConn() << std::endl;
 
                 tunnels.erase(iter);
                 bufferevent_free(serverConn);                

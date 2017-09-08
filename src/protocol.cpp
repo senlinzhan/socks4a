@@ -1,5 +1,8 @@
 #include "protocol.hpp"
 
+#include <arpa/inet.h>
+#include <assert.h>
+#include <errno.h>
 #include <string.h>
 
 ProtocolInfo::ProtocolInfo(evbuffer *input)

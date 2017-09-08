@@ -26,17 +26,7 @@ public:
 private:
     unsigned short     port_;        // server port
     event_base        *base_;        // event loop
-    evdns_base        *dns_;         // dns object
     evconnlistener    *listener_;    // tcp listener
-
-    static void acceptCallback(struct evconnlistener *listener, evutil_socket_t fd,
-                               struct sockaddr *address, int socklen, void *arg);
-    
-    static void acceptErrorCallback(struct evconnlistener *listener, void *arg);
-    
-    static void readCallback(struct bufferevent *bev, void *arg);
-
-    static void eventCallback(struct bufferevent *bev, short events, void *arg);
 };
 
 #endif /* SERVER_H */

@@ -48,9 +48,9 @@ Tunnel::~Tunnel()
 
 void Tunnel::shutdown()
 {
-    std::cout << "shutdown client conn " << clientConn_ << std::endl;    
+    // std::cout << "shutdown client conn " << clientConn_ << std::endl;    
     ::shutdown(bufferevent_getfd(clientConn_), SHUT_WR);
-    status_ = Status::ActiveClosed;    
+    status_ = Status::ActiveShutdown;    
 }
     
 void Tunnel::transferData(evbuffer *input)
@@ -85,7 +85,7 @@ void readCallback(bufferevent *clientConn, void *arg)
     auto tunnel = static_cast<Tunnel *>(arg);
     auto serverConn = tunnel->serverConn();
 
-    assert(tunnel->status() != Tunnel::Status::PassiveClosed);
+    assert(tunnel->status() != Tunnel::Status::PassiveShutdown);
     
     auto input = bufferevent_get_input(clientConn);
     auto output = bufferevent_get_output(serverConn);
@@ -124,7 +124,7 @@ void eventCallback(bufferevent *clientConn, short events, void *arg)
         else
         {
             assert(tunnel->status() == Tunnel::Status::Connected ||
-               tunnel->status() == Tunnel::Status::ActiveClosed);
+               tunnel->status() == Tunnel::Status::ActiveShutdown);
 
             auto serverConn = tunnel->serverConn();
             assert(tunnels.find(serverConn) != tunnels.end());
@@ -135,7 +135,7 @@ void eventCallback(bufferevent *clientConn, short events, void *arg)
                 
                 ::shutdown(bufferevent_getfd(serverConn), SHUT_WR);
                 
-                tunnel->setStatus(Tunnel::Status::PassiveClosed);
+                tunnel->setStatus(Tunnel::Status::PassiveShutdown);
             }
             else
             {

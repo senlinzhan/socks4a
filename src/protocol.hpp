@@ -3,11 +3,6 @@
 
 #include <iostream>
 #include <string>
-#include <memory>
-
-#include <assert.h>
-#include <arpa/inet.h>
-#include <errno.h>
 
 #include <event2/buffer.h>
 

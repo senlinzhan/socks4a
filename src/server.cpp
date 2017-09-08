@@ -11,15 +11,27 @@
 
 #include "server.hpp"
 
+// each server connection has a tunnel
 std::unordered_map<bufferevent *, TunnelPtr> tunnels;
+
+// called when the server accept new connection
+static void acceptCallback(evconnlistener *listener, evutil_socket_t fd, sockaddr *address, int socklen, void *arg);
+
+// called when server accept has an error
+static void acceptErrorCallback(evconnlistener *listener, void *arg);
+
+// called when enough data is read from the connection
+static void readCallback(bufferevent *serverConn, void *arg);
+
+// called when an event occurs on the connection
+static void eventCallback(bufferevent *serverConn, short events, void *arg);
 
 Server::Server(unsigned short port)
     : port_(port),
       base_(event_base_new()),
-      dns_(evdns_base_new(base_, EVDNS_BASE_INITIALIZE_NAMESERVERS)),
       listener_(nullptr)
 {
-    struct sockaddr_in sin;
+    sockaddr_in sin;
     memset(&sin, 0, sizeof(sin));
 
     sin.sin_family = AF_INET;
@@ -32,7 +44,7 @@ Server::Server(unsigned short port)
         nullptr,
         LEV_OPT_CLOSE_ON_FREE|LEV_OPT_REUSEABLE,
         -1,
-        reinterpret_cast<struct sockaddr *>(&sin),
+        reinterpret_cast<sockaddr *>(&sin),
         sizeof(sin)
     );
 
@@ -58,21 +70,21 @@ void Server::run()
     event_base_dispatch(base_);        
 }
 
-void Server::acceptCallback(struct evconnlistener *listener, evutil_socket_t fd,
-                            struct sockaddr *address, int socklen, void *arg)
+void acceptCallback(evconnlistener *listener, evutil_socket_t fd, sockaddr *address, int socklen, void *arg)
 {
     evutil_make_socket_nonblocking(fd);
     
-    auto *base = evconnlistener_get_base(listener);
-    auto *b = bufferevent_socket_new(base, fd, BEV_OPT_CLOSE_ON_FREE);
+    auto base = evconnlistener_get_base(listener);
+    auto serverConn = bufferevent_socket_new(base, fd, BEV_OPT_CLOSE_ON_FREE);
+    std::cout << "new server connection " << serverConn << std::endl;
     
-    bufferevent_setcb(b, readCallback, nullptr, eventCallback, nullptr);
-    bufferevent_enable(b, EV_READ|EV_WRITE);
+    bufferevent_setcb(serverConn, readCallback, nullptr, eventCallback, nullptr);
+    bufferevent_enable(serverConn, EV_READ|EV_WRITE);
 }
 
-void Server::acceptErrorCallback(struct evconnlistener *listener, void *arg)
+void acceptErrorCallback(evconnlistener *listener, void *arg)
 {
-    auto *base = evconnlistener_get_base(listener);
+    auto base = evconnlistener_get_base(listener);
         
     int err = EVUTIL_SOCKET_ERROR();
     std::cerr << "got an error on the listener: "
@@ -85,36 +97,47 @@ void Server::acceptErrorCallback(struct evconnlistener *listener, void *arg)
     event_base_loopexit(base, nullptr);   
 }
     
-void Server::readCallback(struct bufferevent *bev, void *arg)
+void readCallback(bufferevent *serverConn, void *arg)
 {
-    auto *input = bufferevent_get_input(bev);
-    auto *output = bufferevent_get_output(bev);
+    auto base = bufferevent_get_base(serverConn);    
+    auto input = bufferevent_get_input(serverConn);
+    auto output = bufferevent_get_output(serverConn);
     
-    auto iter = tunnels.find(bev);
+    auto iter = tunnels.find(serverConn);
     if (iter != tunnels.end())
     {
-        auto tunnel = iter->second;
+        // the server connection already has a tunnel
+        auto &tunnel = iter->second;
         
-        assert(tunnel->status() != Tunnel::Status::ActiveClosed);
-            
-        tunnel->transferData(input);            
+        // make sure the tunnel can be written
+        assert(tunnel->status() != Tunnel::Status::ActiveShutdown);
+
+        // transfer the received data to the tunnel
+        tunnel->transferData(input);
+        
         return;        
     }
 
-    ProtocolInfo info(input);        
+    // decode the protocol information from the received data
+    ProtocolInfo info(input);
+    
     if (info.status() == ProtocolInfo::Status::success)
-    {
-        std::cout << "receive connection " << bev << " from client: " << info << std::endl;
+    {        
+        std::cout << "server connection " << serverConn
+                  << " receive protocol info: " << info << std::endl;
+
+        // tell the client we understand the protocol information
         info.responseSuccess(output);
-            
-        auto *base = bufferevent_get_base(bev);
-        assert(tunnels.find(bev) == tunnels.end());        
-        tunnels[bev] = std::make_shared<Tunnel>(base, bev, info);            
+
+        // create a tunnel to connect to a remote server
+        tunnels[serverConn] = std::unique_ptr<Tunnel>(new Tunnel(base, serverConn, info));
     }
     else if (info.status() == ProtocolInfo::Status::error)
     {
-        std::cerr << "receive protocol info error: " << info.error() << std::endl;
-        shutdown(bufferevent_getfd(bev), SHUT_WR);
+        std::cerr << "server connection " << serverConn
+                  << " receive invalid protocol info: " << info.error() << std::endl;
+
+        bufferevent_free(serverConn);        
     }
     else
     {
@@ -122,43 +145,40 @@ void Server::readCallback(struct bufferevent *bev, void *arg)
     }
 }
 
-void Server::eventCallback(struct bufferevent *serverConn, short events, void *arg)
+void eventCallback(struct bufferevent *serverConn, short events, void *arg)
 {
     if (events & (BEV_EVENT_EOF | BEV_EVENT_ERROR))
     {
         if (events & BEV_EVENT_ERROR)
         {
             int err = EVUTIL_SOCKET_ERROR();
-            std::cerr << "connection " << serverConn << " receive error from client"
+            std::cerr << "server connection " << serverConn << " receive error: "
                       << evutil_socket_error_to_string(err)
                       << std::endl;
         }
         else
         {
-            std::cout << "connection " << serverConn << " close by client" << std::endl;
             auto iter = tunnels.find(serverConn);
             assert(iter != tunnels.end());
 
-            auto tunnel = iter->second;
-            assert(tunnel->status() != Tunnel::Status::ActiveClosed);
-
-            auto clientConn = tunnel->clientConn();                    
-            if (tunnel->status() == Tunnel::Status::Connected)
+            auto &tunnel = iter->second;
+            assert(tunnel->status() != Tunnel::Status::ActiveShutdown);
+            
+            if (tunnel->status() == Tunnel::Status::Connected || tunnel->status() == Tunnel::Status::Pending)
             {
-                std::cout << "shutdown tunnel connection " << clientConn << std::endl;
-                int err = ::shutdown(bufferevent_getfd(clientConn), SHUT_WR);
-                if (err == -1)
-                {
-                    std::cout << "shutdown error: " << strerror(errno) << std::endl;
-                }
-                tunnel->setStatus(Tunnel::Status::ActiveClosed);            
+                std::cout << "server connection " << serverConn << " shutdown by the remote client, "
+                          << "so it shutdown it's client connection " << tunnel->clientConn() << std::endl;
+                tunnel->shutdown();
             }
             else
             {
-                std::cout << "close connection " << serverConn << std::endl;
+                assert(tunnel->status() == Tunnel::Status::PassiveShutdown);
+                std::cout << "server connection " << serverConn << " closed by the remote client, "
+                          << "so it close itself and it's client connection " << tunnel->clientConn() << std::endl;
+
                 tunnels.erase(iter);
-                bufferevent_free(serverConn);
-            }   
+                bufferevent_free(serverConn);                
+            }
         }
     }        
 }
